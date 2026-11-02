@@ -1,0 +1,265 @@
+package Perl::Critic::Policy::RegularExpressions::ProhibitRegexToSplitAtDelimiter;
+
+# ABSTRACT: Take the text before a literal separator with index and substr, not a regex capture.
+
+use strict;
+use warnings FATAL => 'all';
+
+use 5.014;
+
+use re '/aa';
+
+use List::Util qw{ any };
+use Readonly;
+
+use Perl::Critic::Utils qw{ :severities };
+use parent              qw{Perl::Critic::Policy};
+
+=head1 Perl::Critic::Policy::RegularExpressions::ProhibitRegexToSplitAtDelimiter
+
+A regex that captures everything from the start of a string up to the first
+occurrence of a fixed separator is finding that separator and taking what is in
+front of it.  C<index> finds the separator, and C<substr> takes the part before
+it.  They say what the code does, and they do it without compiling a pattern
+and running it:
+
+    while ( $buffer =~ s/\A([^\n]*)\n// ) { take($1) }            # reported
+
+    while ( ( my $at = index $buffer, "\n" ) >= 0 ) {
+        take( substr $buffer, 0, $at );
+        substr $buffer, 0, $at + 1, q{};
+    }
+
+    my ($key) = $line =~ m/\A(.*?)=/s;                             # reported
+
+    my $at  = index $line, '=';
+    my $key = $at >= 0 ? substr( $line, 0, $at ) : undef;
+
+The substitution takes the part before the separator off the string, together
+with the separator.  Four-argument C<substr> with an empty replacement does
+that.
+
+=head2 PROHIBITED
+
+    s/\A([^\n]*)\n//          # the negated class of the separator
+    m/\A([^=]+)=/             # one or more, see CAVEATS
+    m/^([^:]*):/              # ^ without /m is the start of the string
+    m/\A([^:]*):/m            # /m changes ^ and $, not \A
+    m/\A(.*?)--/s             # a lazy dot under /s, before a string
+    m/\A(.+?), /s             # one or more, see CAVEATS
+    m/\A(.*?)\n/              # without /s, . is anything but a newline
+    m/\A(.*)\n/               # so before a newline it can be greedy too
+    m/\A(\N*)\n/              # and so can \N
+    s/\A([^\n]*)\n//r         # /r: a copy
+    m/\A(?<key>[^:]*):/       # a named capture
+    s/\A([^\n]*)\x0a//        # any spelling of the character
+    s/\A([^\n]*)[\n]//        # a class of one character is that character
+    m/\A([^.]*)\./            # an escaped metacharacter is a character
+    m/\A(.*?)\Q-.\E/s         # and so is anything between \Q and \E
+    m/\A ( [^:]* ) : /x       # whitespace under /x is not text
+
+=head2 ALLOWED
+
+    m/\A(.*?):/               # without /s, . refuses a newline before the :
+    m/\A(.*):/s               # greedy: the last separator, which is rindex
+    m/^([^:]*):/m             # /m: ^ is the start of any line
+    m/([^:]*):/               # unanchored
+    m/\G([^:]*):/gc           # \G is where the last match stopped
+    m/\A([^:]*):/g            # /g
+    s/\A([^\n]*)\n//g         # /g
+    m/\A([^x]*)x/i            # /i: index compares case
+    m/\A([^:;]*)[:;]/         # a class of several characters
+    m/\A([^a]*)ab/            # the first a, which must be followed by b
+    m/\A(.*?)\s/s             # \s, \R and the like are not literal text
+    m/\A(.*?)(?:,|;)/s        # alternation
+    m/\A(.*?)$sep/s           # interpolation
+    s/\A([^\n]*)\n+//         # a quantified separator
+    m/\A([^:]{2,}):/          # a counted quantifier
+    m/\A(\w*):/               # a capture that checks what it captures
+    m/\A([^:]*):(.*)\z/s      # two captures
+    s/\A([^:]*):\s*//         # more pattern after the separator
+    m/\A([^\n]*)\n\z/         # an anchor at the end as well
+    s/\A[^\n]*\n//            # no capture
+    s/\A([^\n]*)\n/$1 /       # a replacement
+    qr/\A([^\n]*)\n/          # a compiled regex, which may be used elsewhere
+
+=head2 CAVEATS
+
+C<[^X]+> and C<.+?> refuse a string that starts with the separator, and
+C<index> finds it at position 0.  When that check is the point, keep the regex
+and say C<## no critic (ProhibitRegexToSplitAtDelimiter)> and why, or test
+C<< $at > 0 >> instead of C<< $at >= 0 >>.
+
+C<index> returns -1 when the separator is not there.  Test the position before
+you take C<substr> of it: C<substr( $line, 0, -1 )> is the whole string less its
+last character, not an error.
+
+Modifiers turned on by C<use re> in the lexical scope of the regex count as if
+they were written on it.  So under C<use re '/s'>, C<m/\A(.*?):/> is reported,
+and under C<use re '/m'>, C<m/^([^:]*):/> is not.
+
+=cut
+
+Readonly::Scalar my $DESC            => q{Regex used to take the text before a literal separator};
+Readonly::Scalar my $EXPL_MATCH      => q{Find the separator with index(), then take the text before it with substr()};
+Readonly::Scalar my $EXPL_SUBSTITUTE => q{Find the separator with index(), then take the text and the separator off with four-argument substr() and an empty replacement};
+
+Readonly::Scalar my $NEWLINE => 10;
+
+# Modifiers that change what the pattern does in a way index cannot follow:
+# /i compares without case, /g iterates.  /m is handled at the anchor, since
+# it matters only to ^, and /s at the dot.
+Readonly::Array my @EXEMPTING_MODIFIERS => qw{ i g };
+
+# The quantifiers that still mean "all of it, up to the separator".
+Readonly::Hash my %QUANTIFIER => map { $_ => 1 } qw{ * + };
+
+# The controls that quote what is between them, which a separator may sit in.
+Readonly::Hash my %QUOTING => map { $_ => 1 } ( '\Q', '\E' );
+
+=head2 METHODS
+
+=head3 supported_parameters
+
+=head3 default_severity
+
+=head3 default_themes
+
+=head3 applies_to
+
+=cut
+
+sub supported_parameters { return () }
+sub default_severity     { return $SEVERITY_MEDIUM }
+sub default_themes       { return qw{ performance maintenance } }
+sub applies_to           { return qw{ PPI::Token::Regexp::Match PPI::Token::Regexp::Substitute } }
+
+=head3 violates
+
+=cut
+
+sub violates {
+    my ( $self, $elem, $doc ) = @_;
+
+    my $substitute = $elem->isa('PPI::Token::Regexp::Substitute');
+    return if $substitute && $elem->get_substitute_string ne q{};
+
+    # From the document rather than PPIx::Regexp->new, so that the modifiers of
+    # a use re in scope are asserted as well as the ones written on the regex.
+    my $regexp = $doc->ppix_regexp_from_element($elem) or return;
+    return if any { $regexp->modifier_asserted($_) } @EXEMPTING_MODIFIERS;
+    return unless ( $regexp->max_capture_number // 0 ) == 1;
+
+    my $re = $regexp->regular_expression or return;
+    return unless _splits_at_a_separator( [ _significant( $re->children ) ] );
+    return $self->violation( $DESC, $substitute ? $EXPL_SUBSTITUTE : $EXPL_MATCH, $elem );
+}
+
+# Whether @$parts is a start anchor, one capture of everything before the
+# separator, and the separator, with nothing after it.
+sub _splits_at_a_separator {
+    my ($parts) = @_;
+
+    my ( $anchor, $capture, @separator ) = @$parts;
+    return unless _is_start($anchor);
+    return unless $capture && $capture->isa('PPIx::Regexp::Structure::Capture');
+
+    my @ordinals = _literal_ordinals(@separator) or return;
+    return _is_everything_before( [ _significant( $capture->children ) ], \@ordinals );
+}
+
+# Whether $part anchors the start of the string.  Under /m, ^ anchors any line.
+sub _is_start {
+    my ($part) = @_;
+
+    return unless $part && $part->isa('PPIx::Regexp::Token::Assertion');
+    my $anchor = $part->content;
+    return 1 if $anchor eq '\A';
+    return $anchor eq '^' && !$part->modifier_asserted('m');
+}
+
+# The characters @parts match, in order, if each part is one literal character
+# or a class of one, between an optional \Q and \E; otherwise nothing.
+sub _literal_ordinals {
+    my (@separator) = @_;
+
+    my @parts = grep { !( $_->isa('PPIx::Regexp::Token::Control') && $QUOTING{ $_->content } ) } @separator;
+
+    my @ordinals = map { _ordinal($_) } @parts;
+    return unless @ordinals && @ordinals == @parts;
+    return @ordinals;
+}
+
+# The character $part matches, if it matches one character and only that one.
+sub _ordinal {
+    my ($part) = @_;
+
+    if ( $part->isa('PPIx::Regexp::Structure::CharClass') ) {
+        return if $part->negated;
+        $part = _sole_member($part) or return;
+    }
+    return unless $part->isa('PPIx::Regexp::Token::Literal');
+    return $part->ordinal // ();
+}
+
+# The one member of the character class $class, if it has exactly one.
+sub _sole_member {
+    my ($class) = @_;
+
+    my @members = $class->children;
+    return unless @members == 1;
+    return $members[0];
+}
+
+# Whether @$body, the inside of the capture, takes everything up to the first
+# occurrence of the separator in @$ordinals.  Either it is a run of anything but
+# the separator's one character, with any greediness, or it is a lazy run of
+# anything at all, which stops at the first occurrence of any separator.
+sub _is_everything_before {
+    my ( $body, $ordinals ) = @_;
+
+    my ( $atom, $quantifier, $greediness, @rest ) = @$body;
+    return if @rest;
+    return unless $atom && $quantifier && $quantifier->isa('PPIx::Regexp::Token::Quantifier') && $QUANTIFIER{ $quantifier->content };
+    return if $greediness && !$greediness->isa('PPIx::Regexp::Token::Greediness');
+
+    my $excluded = _excluded_ordinal($atom);
+    return @$ordinals == 1 && $ordinals->[0] == $excluded if defined $excluded;
+
+    my $lazy = $greediness && $greediness->content eq '?';
+    return $lazy && _is_anything($atom);
+}
+
+# The one character $atom refuses, if it matches every character but one: a
+# negated class of one, \N, or a dot without /s.
+sub _excluded_ordinal {
+    my ($atom) = @_;
+
+    if ( $atom->isa('PPIx::Regexp::Structure::CharClass') ) {
+        return unless $atom->negated;
+        my $member = _sole_member($atom) or return;
+        return unless $member->isa('PPIx::Regexp::Token::Literal');
+        return $member->ordinal;
+    }
+    return unless $atom->isa('PPIx::Regexp::Token::CharClass::Simple');
+    return $NEWLINE if $atom->content eq '\N';
+    return $NEWLINE if $atom->content eq '.' && !$atom->modifier_asserted('s');
+    return;
+}
+
+# Whether $atom matches every character: a dot under /s.
+sub _is_anything {
+    my ($atom) = @_;
+
+    return $atom->isa('PPIx::Regexp::Token::CharClass::Simple') && $atom->content eq '.' && $atom->modifier_asserted('s');
+}
+
+# The parts of a pattern that match something: whitespace and comments under
+# /x do not.
+sub _significant {
+    my (@parts) = @_;
+
+    return grep { !$_->isa('PPIx::Regexp::Token::Whitespace') && !$_->isa('PPIx::Regexp::Token::Comment') } @parts;
+}
+
+1;
