@@ -1,6 +1,6 @@
 package Perl::Critic::Policy::RegularExpressions::ProhibitRegexToSplitAtDelimiter;
 
-# ABSTRACT: Take the text before a literal separator with index and substr, not a regex capture.
+# ABSTRACT: Find the first literal separator with index and substr, not a regex.
 
 use strict;
 use warnings FATAL => 'all';
@@ -39,6 +39,21 @@ The substitution takes the part before the separator off the string, together
 with the separator.  Four-argument C<substr> with an empty replacement does
 that.
 
+Without a capture, the substitution only takes that much off, and the match
+only asks whether the separator is there at all:
+
+    $buffer =~ s/\A[^\n]*\n//;                                    # reported
+
+    my $at = index $buffer, "\n";
+    substr $buffer, 0, $at + 1, q{} if $at >= 0;
+
+    next unless $line =~ m/\A[^=]*=/;                              # reported
+
+    next unless index( $line, '=' ) >= 0;
+
+Under C</r> the substitution leaves the string alone and returns what follows
+the separator, which is C<< substr( $buffer, $at + 1 ) >>.
+
 =head2 PROHIBITED
 
     s/\A([^\n]*)\n//          # the negated class of the separator
@@ -57,6 +72,9 @@ that.
     m/\A([^.]*)\./            # an escaped metacharacter is a character
     m/\A(.*?)\Q-.\E/s         # and so is anything between \Q and \E
     m/\A ( [^:]* ) : /x       # whitespace under /x is not text
+    s/\A[^\n]*\n//            # no capture: the first line off
+    s/\A.*?--//s              # and every other form above, so
+    m/\A[^:]*:/               # a match without a capture is index >= 0
 
 =head2 ALLOWED
 
@@ -79,16 +97,19 @@ that.
     m/\A([^:]*):(.*)\z/s      # two captures
     s/\A([^:]*):\s*//         # more pattern after the separator
     m/\A([^\n]*)\n\z/         # an anchor at the end as well
-    s/\A[^\n]*\n//            # no capture
     s/\A([^\n]*)\n/$1 /       # a replacement
     qr/\A([^\n]*)\n/          # a compiled regex, which may be used elsewhere
+    s/\A(?:[^\n]*)\n//        # a group that captures nothing
 
 =head2 CAVEATS
 
 C<[^X]+> and C<.+?> refuse a string that starts with the separator, and
-C<index> finds it at position 0.  When that check is the point, keep the regex
+C<index> finds it at position 0, with or without a capture.  When that check is the point, keep the regex
 and say C<## no critic (ProhibitRegexToSplitAtDelimiter)> and why, or test
 C<< $at > 0 >> instead of C<< $at >= 0 >>.
+
+A match without a capture also sets C<$&>, C<@-> and C<@+>.  When the code
+goes on to read C<$+[0]>, that is C<index> plus the length of the separator.
 
 C<index> returns -1 when the separator is not there.  Test the position before
 you take C<substr> of it: C<substr( $line, 0, -1 )> is the whole string less its
@@ -100,9 +121,24 @@ and under C<use re '/m'>, C<m/^([^:]*):/> is not.
 
 =cut
 
-Readonly::Scalar my $DESC            => q{Regex used to take the text before a literal separator};
-Readonly::Scalar my $EXPL_MATCH      => q{Find the separator with index(), then take the text before it with substr()};
-Readonly::Scalar my $EXPL_SUBSTITUTE => q{Find the separator with index(), then take the text and the separator off with four-argument substr() and an empty replacement};
+Readonly::Scalar my $DESC => q{Regex used to find the first literal separator};
+
+# The replacement for each form, by whether it substitutes in place or in a
+# copy, and then whether it captures.
+Readonly::Hash my %EXPL => (
+    match => {
+        capture => q{Find the separator with index(), then take the text before it with substr()},
+        none    => q{Ask whether the separator is there with index() >= 0},
+    },
+    substitute => {
+        capture => q{Find the separator with index(), then take the text and the separator off with four-argument substr() and an empty replacement},
+        none    => q{Find the separator with index(), then take everything up to and including it off with four-argument substr() and an empty replacement},
+    },
+    copy => {
+        capture => q{Find the separator with index(), then take the text before it and the text after it with substr()},
+        none    => q{Find the separator with index(), then take the text after it with substr()},
+    },
+);
 
 Readonly::Scalar my $NEWLINE => 10;
 
@@ -148,24 +184,42 @@ sub violates {
     # a use re in scope are asserted as well as the ones written on the regex.
     my $regexp = $doc->ppix_regexp_from_element($elem) or return;
     return if any { $regexp->modifier_asserted($_) } @EXEMPTING_MODIFIERS;
-    return unless ( $regexp->max_capture_number // 0 ) == 1;
 
-    my $re = $regexp->regular_expression or return;
-    return unless _splits_at_a_separator( [ _significant( $re->children ) ] );
-    return $self->violation( $DESC, $substitute ? $EXPL_SUBSTITUTE : $EXPL_MATCH, $elem );
+    my $captures = $regexp->max_capture_number // 0;
+
+    my $re    = $regexp->regular_expression or return;
+    my @parts = _significant( $re->children );
+    return unless _is_start( shift @parts );
+    return unless $captures ? _captures_before_a_separator( \@parts ) : _runs_to_a_separator( \@parts );
+
+    my $form = !$substitute ? 'match' : $regexp->modifier_asserted('r') ? 'copy' : 'substitute';
+    my $expl = $EXPL{$form}{ $captures ? 'capture' : 'none' };
+    return $self->violation( $DESC, $expl, $elem );
 }
 
-# Whether @$parts is a start anchor, one capture of everything before the
+# Whether @$parts, after the anchor, is one capture of everything before the
 # separator, and the separator, with nothing after it.
-sub _splits_at_a_separator {
+sub _captures_before_a_separator {
     my ($parts) = @_;
 
-    my ( $anchor, $capture, @separator ) = @$parts;
-    return unless _is_start($anchor);
+    my ( $capture, @separator ) = @$parts;
     return unless $capture && $capture->isa('PPIx::Regexp::Structure::Capture');
 
     my @ordinals = _literal_ordinals(@separator) or return;
     return _is_everything_before( [ _significant( $capture->children ) ], \@ordinals );
+}
+
+# Whether @$parts, after the anchor, is the same run of everything before the
+# separator with no capture around it, and the separator.
+sub _runs_to_a_separator {
+    my ($parts) = @_;
+
+    my ( $atom, $quantifier, @separator ) = @$parts;
+    my @run = ( $atom, $quantifier );
+    push @run, shift @separator if @separator && $separator[0]->isa('PPIx::Regexp::Token::Greediness');
+
+    my @ordinals = _literal_ordinals(@separator) or return;
+    return _is_everything_before( \@run, \@ordinals );
 }
 
 # Whether $part anchors the start of the string.  Under /m, ^ anchors any line.

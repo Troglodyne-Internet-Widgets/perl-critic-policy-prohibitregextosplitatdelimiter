@@ -1,6 +1,6 @@
 # NAME
 
-Perl::Critic::Policy::RegularExpressions::ProhibitRegexToSplitAtDelimiter - Take the text before a literal separator with index and substr, not a regex capture.
+Perl::Critic::Policy::RegularExpressions::ProhibitRegexToSplitAtDelimiter - Find the first literal separator with index and substr, not a regex.
 
 # VERSION
 
@@ -32,6 +32,23 @@ The substitution takes the part before the separator off the string, together
 with the separator.  Four-argument `substr` with an empty replacement does
 that.
 
+Without a capture, the substitution only takes that much off, and the match
+only asks whether the separator is there at all:
+
+```perl
+$buffer =~ s/\A[^\n]*\n//;                                    # reported
+
+my $at = index $buffer, "\n";
+substr $buffer, 0, $at + 1, q{} if $at >= 0;
+
+next unless $line =~ m/\A[^=]*=/;                              # reported
+
+next unless index( $line, '=' ) >= 0;
+```
+
+Under `/r` the substitution leaves the string alone and returns what follows
+the separator, which is `substr( $buffer, $at + 1 )`.
+
 ## PROHIBITED
 
 ```
@@ -51,6 +68,9 @@ s/\A([^\n]*)[\n]//        # a class of one character is that character
 m/\A([^.]*)\./            # an escaped metacharacter is a character
 m/\A(.*?)\Q-.\E/s         # and so is anything between \Q and \E
 m/\A ( [^:]* ) : /x       # whitespace under /x is not text
+s/\A[^\n]*\n//            # no capture: the first line off
+s/\A.*?--//s              # and every other form above, so
+m/\A[^:]*:/               # a match without a capture is index >= 0
 ```
 
 ## ALLOWED
@@ -75,17 +95,20 @@ m/\A(\w*):/               # a capture that checks what it captures
 m/\A([^:]*):(.*)\z/s      # two captures
 s/\A([^:]*):\s*//         # more pattern after the separator
 m/\A([^\n]*)\n\z/         # an anchor at the end as well
-s/\A[^\n]*\n//            # no capture
 s/\A([^\n]*)\n/$1 /       # a replacement
 qr/\A([^\n]*)\n/          # a compiled regex, which may be used elsewhere
+s/\A(?:[^\n]*)\n//        # a group that captures nothing
 ```
 
 ## CAVEATS
 
 `[^X]+` and `.+?` refuse a string that starts with the separator, and
-`index` finds it at position 0.  When that check is the point, keep the regex
+`index` finds it at position 0, with or without a capture.  When that check is the point, keep the regex
 and say `## no critic (ProhibitRegexToSplitAtDelimiter)` and why, or test
 `$at > 0` instead of `$at >= 0`.
+
+A match without a capture also sets `$&`, `@-` and `@+`.  When the code
+goes on to read `$+[0]`, that is `index` plus the length of the separator.
 
 `index` returns -1 when the separator is not there.  Test the position before
 you take `substr` of it: `substr( $line, 0, -1 )` is the whole string less its
@@ -112,6 +135,10 @@ and under `use re '/m'`, `m/^([^:]*):/` is not.
 Current Maintainers:
 
 - George S. Baugh <george@troglodyne.net>
+
+# CONTRIBUTOR
+
+troglodyne-bot <morpheus@troglodyne.net>
 
 # COPYRIGHT AND LICENSE
 

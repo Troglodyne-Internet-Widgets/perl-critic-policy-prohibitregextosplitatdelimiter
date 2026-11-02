@@ -15,8 +15,8 @@ t/main.t - which patterns the policy reads as taking the text before a separator
 Tables of snippets that must be reported and a table that must not.
 
 A reported regex is a match, or a substitution with an empty replacement, whose
-pattern is an anchor at the start of the string, one capture of everything
-before a literal separator, and that separator.  The edges are the two
+pattern is an anchor at the start of the string, everything before a literal
+separator, with or without one capture around it, and that separator.  The edges are the two
 spellings of "everything before" (a negated class and a lazy dot), what C<.>
 means without C</s>, the spellings of the separator, the anchors and what C</m>
 does to C<^>, modifiers turned on by C<use re>, and anything else in the
@@ -126,12 +126,70 @@ check_table(
     'something after the separator'  => [ 0, q{$l =~ s/\A([^:]*):\s*//;} ],
     'anchored at the end too'        => [ 0, q{my ($l) = $b =~ m/\A([^\n]*)\n\z/;} ],
     'no separator'                   => [ 0, q{my ($k) = $l =~ m/\A([^:]*)/;} ],
-    'no capture'                     => [ 0, q{$b =~ s/\A[^\n]*\n//;} ],
     'a replacement'                  => [ 0, q{$b =~ s/\A([^\n]*)\n/$1 /;} ],
     'a compiled regex'               => [ 0, q{my $rx = qr/\A([^\n]*)\n/;} ],
     'a split'                        => [ 0, q{my ($k) = split /:/, $l, 2;} ],
     'index itself'                   => [ 0, q{my $k = substr $l, 0, index $l, ':';} ],
 );
+
+check_table(
+    'without a capture',
+    'a substitution'           => [ 1, q{$b =~ s/\A[^\n]*\n//;} ],
+    'one or more'              => [ 1, q{$b =~ s/\A[^\n]+\n//;} ],
+    'possessive'               => [ 1, q{$b =~ s/\A[^\n]*+\n//;} ],
+    'caret'                    => [ 1, q{$b =~ s/^[^\n]*\n//;} ],
+    'a copy, with /r'          => [ 1, q{my $rest = $b =~ s/\A[^\n]*\n//r;} ],
+    'a lazy dot under /s'      => [ 1, q{$l =~ s/\A.*?--//s;} ],
+    'a dot before a newline'   => [ 1, q{$b =~ s/\A.*\n//;} ],
+    '\N before a newline'      => [ 1, q{$b =~ s/\A\N*\n//;} ],
+    '/s from use re'           => [ 1, q{use re '/s'; $l =~ s/\A.*?://;} ],
+    'hex'                      => [ 1, q{$b =~ s/\A[^\n]*\x0a//;} ],
+    'a class of one'           => [ 1, q{$b =~ s/\A[^\n]*[\n]//;} ],
+    'an escaped metacharacter' => [ 1, q{$n =~ s/\A[^.]*\.//;} ],
+    'quoted with \Q'           => [ 1, q{$l =~ s/\A.*?\Q-.\E//s;} ],
+    'under /x'                 => [ 1, q{$l =~ s/\A [^:]* : //x;} ],
+    'a match'                  => [ 1, q{f() if $l =~ m/\A[^:]*:/;} ],
+    'a match with a lazy dot'  => [ 1, q{f() if $l =~ m/\A.*?--/s;} ],
+);
+
+check_table(
+    'without a capture, not a split at a separator',
+    '/i'                            => [ 0, q{$l =~ s/\A[^x]*x//i;} ],
+    '/g'                            => [ 0, q{$b =~ s/\A[^\n]*\n//g;} ],
+    'caret under /m'                => [ 0, q{$b =~ s/^[^\n]*\n//m;} ],
+    'a dot without /s'              => [ 0, q{$l =~ s/\A.*?://;} ],
+    'greedy under /s'               => [ 0, q{$b =~ s/\A.*\n//s;} ],
+    'unanchored'                    => [ 0, q{$b =~ s/[^\n]*\n//;} ],
+    'a class of several'            => [ 0, q{$b =~ s/\A[^\n]*[\r\n]//;} ],
+    'whitespace'                    => [ 0, q{$l =~ s/\A.*?\s//s;} ],
+    'alternation'                   => [ 0, q{$l =~ s/\A.*?(?:,|;)//s;} ],
+    'interpolation'                 => [ 0, q{$l =~ s/\A.*?$sep//s;} ],
+    'a quantified separator'        => [ 0, q{$b =~ s/\A[^\n]*\n+//;} ],
+    'a counted quantifier'          => [ 0, q{$b =~ s/\A[^\n]{2,}\n//;} ],
+    'a narrower run'                => [ 0, q{$l =~ s/\A\w*://;} ],
+    'something after the separator' => [ 0, q{$l =~ s/\A[^:]*:\s*//;} ],
+    'no separator'                  => [ 0, q{$b =~ s/\A[^\n]*//;} ],
+    'nothing before the separator'  => [ 0, q{$b =~ s/\A\n//;} ],
+    'a replacement'                 => [ 0, q{$b =~ s/\A[^\n]*\n/x/;} ],
+    'a compiled regex'              => [ 0, q{my $rx = qr/\A[^\n]*\n/;} ],
+    'a group that captures nothing' => [ 0, q{$b =~ s/\A(?:[^\n]*)\n//;} ],
+);
+
+# Each form is told its own replacement.  The wording of the explanation is
+# the policy's to choose, so only the part that names the replacement is checked.
+my %explains = (
+    q{my ($k) = $l =~ m/\A([^:]*):/;}   => q{take the text before it with substr},
+    q{$b =~ s/\A([^\n]*)\n//;}          => q{take the text and the separator off with four-argument substr},
+    q{$b =~ s/\A[^\n]*\n//;}            => q{up to and including it off with four-argument substr},
+    q{f() if $l =~ m/\A[^:]*:/;}        => q{index() >= 0},
+    q{my $r = $b =~ s/\A([^\n]*)\n//r;} => q{the text before it and the text after it with substr},
+    q{my $r = $b =~ s/\A[^\n]*\n//r;}   => q{then take the text after it with substr},
+);
+foreach my $source ( sort keys %explains ) {
+    my ($violation) = $critic->critique( \$source );
+    my $explanation = $violation ? $violation->explanation : q{};
+    ok( index( $explanation, $explains{$source} ) >= 0, "the explanation of $source" ) or diag $explanation;
+}
 
 is( scalar( () = warnings { Perl::Critic->new( -profile => q{}, '-single-policy' => $POLICY ) } ), 0, 'nothing warns on construction' );
 

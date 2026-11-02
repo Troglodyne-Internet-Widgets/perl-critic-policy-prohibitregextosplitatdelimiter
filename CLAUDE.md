@@ -4,7 +4,7 @@ This file is the procedure for work in this repository.  The POD and the files
 named below say what the code is and how it is written.
 
 Perl-Critic-Policy-RegularExpressions-ProhibitRegexToSplitAtDelimiter is one
-Perl::Critic policy.  It reports a regex that captures everything before the
+Perl::Critic policy.  It reports a regex that takes everything before the
 first literal separator at the start of a string, such as `s/\A([^\n]*)\n//`,
 because `index` finds the separator and `substr` takes the part before it.
 
