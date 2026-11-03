@@ -8,24 +8,30 @@ version 0.001
 
 # Perl::Critic::Policy::RegularExpressions::ProhibitRegexToSplitAtDelimiter
 
-A regex that captures everything from the start of a string up to the first
-occurrence of a fixed separator is finding that separator and taking what is in
-front of it.  `index` finds the separator, and `substr` takes the part before
-it.  They say what the code does, and they do it without compiling a pattern
-and running it:
+Using regexes to do simple text manipulation in a loop is a common cause of
+performance problems.  This can be prevented from happening by refraining
+from doing so everywhere.  One pattern in that class is splitting at a delimiter without using `split`.
+This policy prevents doing just that with regexes.
+
+Do `index` + `substr` to pick out what you are looking for, or `split` when you
+expect many matches, and can afford loading the entire string.
 
 ```perl
+# Reading buffer chunks till we get a full line to process w/ take()
 while ( $buffer =~ s/\A([^\n]*)\n// ) { take($1) }            # reported
 
-while ( ( my $at = index $buffer, "\n" ) >= 0 ) {
+while ( ( my $at = index $buffer, "\n" ) >= 0 ) {             # OK!
     take( substr $buffer, 0, $at );
     substr $buffer, 0, $at + 1, q{};
 }
 
+# Parsing a key from a key=value config file
 my ($key) = $line =~ m/\A(.*?)=/s;                             # reported
 
-my $at  = index $line, '=';
+my $at  = index $line, '=';                                    # OK!
 my $key = $at >= 0 ? substr( $line, 0, $at ) : undef;
+
+my ($key,$value) = split(/=/, $line, 2);                       # OK!
 ```
 
 The substitution takes the part before the separator off the string, together
@@ -129,6 +135,15 @@ and under `use re '/m'`, `m/^([^:]*):/` is not.
 ### applies\_to
 
 ### violates
+
+# BUGS
+
+Please report any bugs or feature requests on the bugtracker website
+[https://github.com/teodesian/perl-critic-policy-prohibitregextosplitatdelimiter/issues](https://github.com/teodesian/perl-critic-policy-prohibitregextosplitatdelimiter/issues)
+
+When submitting a bug or request, please include a test-file or a
+patch to an existing test-file that illustrates the bug or desired
+feature.
 
 # AUTHORS
 
