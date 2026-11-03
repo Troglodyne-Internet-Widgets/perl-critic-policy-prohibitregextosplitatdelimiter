@@ -17,23 +17,29 @@ use parent              qw{Perl::Critic::Policy};
 
 =head1 Perl::Critic::Policy::RegularExpressions::ProhibitRegexToSplitAtDelimiter
 
-A regex that captures everything from the start of a string up to the first
-occurrence of a fixed separator is finding that separator and taking what is in
-front of it.  C<index> finds the separator, and C<substr> takes the part before
-it.  They say what the code does, and they do it without compiling a pattern
-and running it:
+Using regexes to do simple text manipulation in a loop is a common cause of
+performance problems.  This can be prevented from happening by refraining
+from doing so everywhere.  One pattern in that class is splitting at a delimiter without using C<split>.
+This policy prevents doing just that with regexes.
 
+Do C<index> + C<substr> to pick out what you are looking for, or C<split> when you
+expect many matches, and can afford loading the entire string.
+
+    # Reading buffer chunks till we get a full line to process w/ take()
     while ( $buffer =~ s/\A([^\n]*)\n// ) { take($1) }            # reported
 
-    while ( ( my $at = index $buffer, "\n" ) >= 0 ) {
+    while ( ( my $at = index $buffer, "\n" ) >= 0 ) {             # OK!
         take( substr $buffer, 0, $at );
         substr $buffer, 0, $at + 1, q{};
     }
 
+    # Parsing a key from a key=value config file
     my ($key) = $line =~ m/\A(.*?)=/s;                             # reported
 
-    my $at  = index $line, '=';
+    my $at  = index $line, '=';                                    # OK!
     my $key = $at >= 0 ? substr( $line, 0, $at ) : undef;
+
+    my ($key,$value) = split(/=/, $line, 2);                       # OK!
 
 The substitution takes the part before the separator off the string, together
 with the separator.  Four-argument C<substr> with an empty replacement does
