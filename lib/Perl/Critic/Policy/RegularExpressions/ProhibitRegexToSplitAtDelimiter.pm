@@ -189,7 +189,7 @@ sub violates {
     # From the document rather than PPIx::Regexp->new, so that the modifiers of
     # a use re in scope are asserted as well as the ones written on the regex.
     my $regexp = $doc->ppix_regexp_from_element($elem) or return;
-    return if any { $regexp->modifier_asserted($_) } @EXEMPTING_MODIFIERS;
+    return if any { _asserts( $regexp, $_ ) } @EXEMPTING_MODIFIERS;
 
     my $captures = $regexp->max_capture_number // 0;
 
@@ -199,8 +199,14 @@ sub violates {
     return unless $captures ? _captures_before_a_separator( \@parts ) : _runs_to_a_separator( \@parts );
 
     my $form = !$substitute ? 'match' : $regexp->modifier_asserted('r') ? 'copy' : 'substitute';
-    my $expl = $EXPL{$form}{ $captures ? 'capture' : 'none' };
+    my $expl = do { no autovivification; $EXPL{$form}{ $captures ? 'capture' : 'none' } };
     return $self->violation( $DESC, $expl, $elem );
+}
+
+# Whether $regexp asserts the modifier $flag.
+sub _asserts {
+    my ( $regexp, $flag ) = @_;
+    return $regexp->modifier_asserted($flag);
 }
 
 # Whether @$parts, after the anchor, is one capture of everything before the
@@ -238,12 +244,18 @@ sub _is_start {
     return $anchor eq '^' && !$part->modifier_asserted('m');
 }
 
+# Whether $part is a \Q or \E.
+sub _is_quoting {
+    my ($part) = @_;
+    return $part->isa('PPIx::Regexp::Token::Control') && $QUOTING{ $part->content };
+}
+
 # The characters @parts match, in order, if each part is one literal character
 # or a class of one, between an optional \Q and \E; otherwise nothing.
 sub _literal_ordinals {
     my (@separator) = @_;
 
-    my @parts = grep { !( $_->isa('PPIx::Regexp::Token::Control') && $QUOTING{ $_->content } ) } @separator;
+    my @parts = grep { !_is_quoting($_) } @separator;
 
     my @ordinals = map { _ordinal($_) } @parts;
     return unless @ordinals && @ordinals == @parts;
